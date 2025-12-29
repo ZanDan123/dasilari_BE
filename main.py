@@ -82,9 +82,9 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8080",
         "http://127.0.0.1:4200",
-        "https://*.vercel.app",  # All Vercel subdomains
-        # Add your specific production frontend URL here after deployment
-        # Example: "https://dasilari-frontend.vercel.app"
+        # Production URLs
+        "https://dasilari-steel.vercel.app",  # Main production frontend
+        "https://*.vercel.app",  # All Vercel preview deployments
     ],
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
