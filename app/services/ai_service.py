@@ -1,5 +1,6 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 
@@ -12,8 +13,8 @@ class AIService:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('models/gemini-2.5-flash')
+        self.client = genai.Client(api_key=api_key)
+        self.model = 'gemini-2.0-flash'
     
     def chat_with_gemini(self, message: str, user_context: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -66,9 +67,10 @@ Communication style:
             # Combine system prompt and user message for Gemini
             full_prompt = f"{system_prompt}\n\nUser: {message}\n\nAssistant:"
             
-            response = self.model.generate_content(
-                full_prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.7,
                     max_output_tokens=500,
                 )
