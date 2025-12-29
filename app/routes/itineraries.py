@@ -1,13 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, status
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import date, datetime
 
-from app.database import get_db
-from app.models.user import User
-from app.models.destination import Destination
-from app.models.itinerary import Itinerary
+from app.data import get_user_by_id, get_destination_by_id, create_itinerary, get_itineraries_by_user, filter_itineraries
 from app.services.ai_service import ai_service
 
 router = APIRouter(prefix="/api/itineraries", tags=["itineraries"])
@@ -21,13 +17,9 @@ class ItineraryGenerateRequest(BaseModel):
 
 
 @router.post("/generate", status_code=status.HTTP_201_CREATED)
-def generate_itinerary(
-    request: ItineraryGenerateRequest,
-    db: Session = Depends(get_db)
-):
+def generate_itinerary(request: ItineraryGenerateRequest):
     """
     Generate complete itinerary with time slots, costs, and locations using AI.
-    Saves itinerary to database and returns formatted response.
     
     Args:
         user_id: ID of the user
@@ -36,10 +28,10 @@ def generate_itinerary(
         visit_date: Date for the itinerary
     
     Returns:
-        Generated itinerary with schedule, costs, and saved database entries
+        Generated itinerary with schedule, costs, and recommendations
     """
     # Validate user exists
-    user = db.query(User).filter(User.id == request.user_id).first()
+    user = get_user_by_id(request.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -47,13 +39,16 @@ def generate_itinerary(
         )
     
     # Validate and fetch destinations
-    destinations = db.query(Destination).filter(
-        Destination.id.in_(request.destination_ids)
-    ).all()
+    destinations = []
+    missing_ids = []
+    for dest_id in request.destination_ids:
+        dest = get_destination_by_id(dest_id)
+        if dest:
+            destinations.append(dest)
+        else:
+            missing_ids.append(dest_id)
     
-    if len(destinations) != len(request.destination_ids):
-        found_ids = [d.id for d in destinations]
-        missing_ids = set(request.destination_ids) - set(found_ids)
+    if missing_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Destinations not found: {missing_ids}"
@@ -61,22 +56,22 @@ def generate_itinerary(
     
     # Prepare user preferences for AI
     user_preferences = {
-        "personality_type": user.personality_type,
-        "travel_style": user.travel_style,
-        "transport_type": user.transport_type
+        "personality_type": user["personality_type"],
+        "travel_style": user["travel_style"],
+        "transport_type": user["transport_type"]
     }
     
     # Prepare destination data for AI
     selected_destinations = [
         {
-            "id": dest.id,
-            "name": dest.name,
-            "location": dest.location,
-            "estimated_cost": dest.estimated_cost or 0,
-            "estimated_time": dest.estimated_time or 90,
-            "category": dest.category,
-            "photo_spot": dest.photo_spot,
-            "description": dest.description
+            "id": dest["id"],
+            "name": dest["name"],
+            "location": dest["location"],
+            "estimated_cost": dest["estimated_cost"] or 0,
+            "estimated_time": dest["estimated_time"] or 90,
+            "category": dest["category"],
+            "photo_spot": dest["photo_spot"],
+            "description": dest["description"]
         }
         for dest in destinations
     ]
@@ -88,33 +83,33 @@ def generate_itinerary(
             selected_destinations
         )
         
-        # Save itinerary items to database
+        # Process itinerary items
         saved_itineraries = []
-        destination_lookup = {dest.id: dest for dest in destinations}
+        destination_lookup = {dest["id"]: dest for dest in destinations}
         
         for schedule_item in ai_itinerary.get("schedule", []):
             # Find matching destination by name
             destination_name = schedule_item.get("destination")
             matching_dest = next(
-                (d for d in destinations if d.name == destination_name),
+                (d for d in destinations if d["name"] == destination_name),
                 None
             )
             
             if matching_dest:
                 # Create itinerary entry
-                itinerary_entry = Itinerary(
+                time_slot = schedule_item.get("time_slot", "morning")
+                itinerary_entry = create_itinerary(
                     user_id=request.user_id,
-                    destination_id=matching_dest.id,
-                    visit_date=request.visit_date,
-                    time_slot=schedule_item.get("time_slot", "morning"),
+                    destination_id=matching_dest["id"],
+                    visit_date=request.visit_date.isoformat(),
+                    time_slot=time_slot,
                     emotion_tag=request.emotion
                 )
                 
-                db.add(itinerary_entry)
                 saved_itineraries.append({
-                    "destination_id": matching_dest.id,
-                    "destination_name": matching_dest.name,
-                    "time_slot": schedule_item.get("time_slot"),
+                    "destination_id": matching_dest["id"],
+                    "destination_name": matching_dest["name"],
+                    "time_slot": time_slot,
                     "time_range": schedule_item.get("time_range", ""),
                     "activity": schedule_item.get("activity", ""),
                     "duration": schedule_item.get("duration", ""),
@@ -122,13 +117,6 @@ def generate_itinerary(
                     "directions": schedule_item.get("directions", ""),
                     "tips": schedule_item.get("tips", "")
                 })
-        
-        # Commit all itinerary entries
-        db.commit()
-        
-        # Update user's has_itinerary status
-        user.has_itinerary = True
-        db.commit()
         
         # Build complete response
         return {
@@ -148,7 +136,6 @@ def generate_itinerary(
         }
     
     except Exception as e:
-        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate itinerary: {str(e)}"
@@ -158,8 +145,7 @@ def generate_itinerary(
 @router.get("/{user_id}")
 def get_user_itineraries(
     user_id: int,
-    visit_date: Optional[date] = None,
-    db: Session = Depends(get_db)
+    visit_date: Optional[date] = None
 ):
     """
     Retrieve saved itineraries for a user with destination details and total cost calculation.
@@ -172,35 +158,24 @@ def get_user_itineraries(
         User's itineraries with complete destination information and cost totals
     """
     # Validate user exists
-    user = db.query(User).filter(User.id == user_id).first()
+    user = get_user_by_id(user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User with id {user_id} not found"
         )
     
-    # Query itineraries with destination join
-    query = db.query(Itinerary, Destination).join(
-        Destination, Itinerary.destination_id == Destination.id
-    ).filter(Itinerary.user_id == user_id)
+    # Get all itineraries for user
+    user_itineraries = get_itineraries_by_user(user_id)
     
-    # Apply date filter if provided
+    # Filter by date if provided
     if visit_date:
-        query = query.filter(Itinerary.visit_date == visit_date)
+        user_itineraries = [i for i in user_itineraries if i["visit_date"] == visit_date.isoformat()]
     
-    # Order by date and time slot
-    time_slot_order = {
-        "morning": 1,
-        "afternoon": 2,
-        "evening": 3
-    }
-    
-    results = query.order_by(Itinerary.visit_date.desc()).all()
-    
-    if not results:
+    if not user_itineraries:
         return {
             "user_id": user_id,
-            "user_name": user.name,
+            "user_name": user["name"],
             "itineraries": [],
             "total_itineraries": 0,
             "message": "No itineraries found"
@@ -209,37 +184,48 @@ def get_user_itineraries(
     # Group itineraries by date
     itineraries_by_date = {}
     
-    for itinerary, destination in results:
-        date_key = itinerary.visit_date.isoformat()
+    # Time slot order for sorting
+    time_slot_order = {
+        "morning": 1,
+        "afternoon": 2,
+        "evening": 3
+    }
+    
+    for itinerary in user_itineraries:
+        date_key = itinerary["visit_date"]
+        destination = get_destination_by_id(itinerary["destination_id"])
+        
+        if not destination:
+            continue
         
         if date_key not in itineraries_by_date:
             itineraries_by_date[date_key] = {
                 "visit_date": date_key,
-                "emotion_tag": itinerary.emotion_tag,
+                "emotion_tag": itinerary["emotion_tag"],
                 "destinations": [],
                 "total_cost": 0.0,
                 "total_time": 0,
-                "created_at": itinerary.created_at.isoformat()
+                "created_at": itinerary["created_at"]
             }
         
         # Add destination to this date's itinerary
-        dest_cost = destination.estimated_cost or 0.0
-        dest_time = destination.estimated_time or 0
+        dest_cost = destination["estimated_cost"] or 0.0
+        dest_time = destination["estimated_time"] or 0
         
         itineraries_by_date[date_key]["destinations"].append({
-            "itinerary_id": itinerary.id,
+            "itinerary_id": itinerary["id"],
             "destination": {
-                "id": destination.id,
-                "name": destination.name,
-                "location": destination.location,
-                "category": destination.category,
-                "photo_spot": destination.photo_spot,
+                "id": destination["id"],
+                "name": destination["name"],
+                "location": destination["location"],
+                "category": destination["category"],
+                "photo_spot": destination["photo_spot"],
                 "estimated_cost": dest_cost,
                 "estimated_time": dest_time,
-                "description": destination.description
+                "description": destination["description"]
             },
-            "time_slot": itinerary.time_slot,
-            "time_slot_order": time_slot_order.get(itinerary.time_slot, 0)
+            "time_slot": itinerary["time_slot"],
+            "time_slot_order": time_slot_order.get(itinerary["time_slot"], 0)
         })
         
         itineraries_by_date[date_key]["total_cost"] += dest_cost
@@ -263,11 +249,11 @@ def get_user_itineraries(
     
     return {
         "user_id": user_id,
-        "user_name": user.name,
+        "user_name": user["name"],
         "user_preferences": {
-            "personality_type": user.personality_type,
-            "travel_style": user.travel_style,
-            "transport_type": user.transport_type
+            "personality_type": user["personality_type"],
+            "travel_style": user["travel_style"],
+            "transport_type": user["transport_type"]
         },
         "itineraries": itineraries_list,
         "summary": {

@@ -1,20 +1,19 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
 from typing import List, Dict, Any, Optional
 from datetime import date
 from collections import defaultdict
 
-from app.models.user import User
-from app.models.destination import Destination
-from app.models.itinerary import Itinerary
+from app.data import (
+    get_user_by_id, get_all_users, get_destination_by_id,
+    get_itineraries_by_user, filter_itineraries
+)
 
 
 class MatchingService:
     """Service for matching travelers and creating group itineraries."""
     
-    def __init__(self, db: Session):
-        """Initialize MatchingService with database session."""
-        self.db = db
+    def __init__(self):
+        """Initialize MatchingService."""
+        pass
     
     def find_matching_travelers(
         self, 
@@ -35,47 +34,50 @@ class MatchingService:
         Returns:
             List of potential travel buddies with their profiles and compatibility info
         """
-        # Build query for matching itineraries
-        query = self.db.query(Itinerary, User, Destination).join(
-            User, Itinerary.user_id == User.id
-        ).join(
-            Destination, Itinerary.destination_id == Destination.id
-        ).filter(
-            and_(
-                Itinerary.user_id != user_id,  # Exclude current user
-                Itinerary.destination_id == destination_id,
-                Itinerary.time_slot == time_slot
-            )
-        )
-        
-        # Add date filter if provided
-        if visit_date:
-            query = query.filter(Itinerary.visit_date == visit_date)
-        
-        results = query.all()
-        
         # Get current user's profile for compatibility matching
-        current_user = self.db.query(User).filter(User.id == user_id).first()
+        current_user = get_user_by_id(user_id)
+        if not current_user:
+            return []
+        
+        # Get all itineraries
+        all_itineraries = filter_itineraries(destination_id=destination_id)
+        
+        # Filter by time_slot and exclude current user
+        matching_itineraries = [
+            i for i in all_itineraries 
+            if i["user_id"] != user_id and i["time_slot"] == time_slot
+        ]
+        
+        # Filter by date if provided
+        if visit_date:
+            date_str = visit_date.isoformat() if isinstance(visit_date, date) else visit_date
+            matching_itineraries = [i for i in matching_itineraries if i["visit_date"] == date_str]
         
         matching_travelers = []
-        for itinerary, user, destination in results:
+        for itinerary in matching_itineraries:
+            user = get_user_by_id(itinerary["user_id"])
+            destination = get_destination_by_id(itinerary["destination_id"])
+            
+            if not user or not destination:
+                continue
+            
             # Calculate compatibility score
             compatibility_score = self._calculate_compatibility(current_user, user)
             
             matching_travelers.append({
-                "user_id": user.id,
-                "name": user.name,
-                "personality_type": user.personality_type,
-                "travel_style": user.travel_style,
-                "transport_type": user.transport_type,
+                "user_id": user["id"],
+                "name": user["name"],
+                "personality_type": user["personality_type"],
+                "travel_style": user["travel_style"],
+                "transport_type": user["transport_type"],
                 "destination": {
-                    "id": destination.id,
-                    "name": destination.name,
-                    "location": destination.location
+                    "id": destination["id"],
+                    "name": destination["name"],
+                    "location": destination["location"]
                 },
-                "visit_date": itinerary.visit_date.isoformat(),
-                "time_slot": itinerary.time_slot,
-                "emotion_tag": itinerary.emotion_tag,
+                "visit_date": itinerary["visit_date"],
+                "time_slot": itinerary["time_slot"],
+                "emotion_tag": itinerary["emotion_tag"],
                 "compatibility_score": compatibility_score,
                 "compatibility_level": self._get_compatibility_level(compatibility_score),
                 "match_reasons": self._get_match_reasons(current_user, user)
@@ -108,18 +110,19 @@ class MatchingService:
             }
         
         # Get all users' information
-        users = self.db.query(User).filter(User.id.in_(user_ids)).all()
-        users_dict = {user.id: user for user in users}
+        users = [get_user_by_id(uid) for uid in user_ids]
+        users = [u for u in users if u is not None]
+        users_dict = {user["id"]: user for user in users}
+        
+        target_date_str = target_date.isoformat() if isinstance(target_date, date) else target_date
         
         # Get all itineraries for these users on the target date
-        itineraries = self.db.query(Itinerary, Destination).join(
-            Destination, Itinerary.destination_id == Destination.id
-        ).filter(
-            and_(
-                Itinerary.user_id.in_(user_ids),
-                Itinerary.visit_date == target_date
-            )
-        ).all()
+        all_itineraries = []
+        for uid in user_ids:
+            user_itineraries = get_itineraries_by_user(uid)
+            for itin in user_itineraries:
+                if itin["visit_date"] == target_date_str:
+                    all_itineraries.append(itin)
         
         # Organize itineraries by time slot
         time_slot_data = {
@@ -128,20 +131,24 @@ class MatchingService:
             "evening": defaultdict(list)
         }
         
-        for itinerary, destination in itineraries:
-            time_slot_data[itinerary.time_slot][destination.id].append({
-                "user_id": itinerary.user_id,
-                "user_name": users_dict[itinerary.user_id].name,
+        for itinerary in all_itineraries:
+            destination = get_destination_by_id(itinerary["destination_id"])
+            if not destination:
+                continue
+                
+            time_slot_data[itinerary["time_slot"]][destination["id"]].append({
+                "user_id": itinerary["user_id"],
+                "user_name": users_dict.get(itinerary["user_id"], {}).get("name", "Unknown"),
                 "destination": {
-                    "id": destination.id,
-                    "name": destination.name,
-                    "location": destination.location,
-                    "estimated_cost": destination.estimated_cost,
-                    "estimated_time": destination.estimated_time,
-                    "category": destination.category,
-                    "photo_spot": destination.photo_spot
+                    "id": destination["id"],
+                    "name": destination["name"],
+                    "location": destination["location"],
+                    "estimated_cost": destination["estimated_cost"],
+                    "estimated_time": destination["estimated_time"],
+                    "category": destination["category"],
+                    "photo_spot": destination["photo_spot"]
                 },
-                "emotion_tag": itinerary.emotion_tag
+                "emotion_tag": itinerary["emotion_tag"]
             })
         
         # Analyze each time slot for common destinations and splits
@@ -212,14 +219,14 @@ class MatchingService:
         meeting_suggestions = self._suggest_meeting_points(group_schedule, users)
         
         return {
-            "date": target_date.isoformat(),
+            "date": target_date_str,
             "group_size": len(user_ids),
             "participants": [
                 {
-                    "id": user.id,
-                    "name": user.name,
-                    "personality_type": user.personality_type,
-                    "travel_style": user.travel_style
+                    "id": user["id"],
+                    "name": user["name"],
+                    "personality_type": user["personality_type"],
+                    "travel_style": user["travel_style"]
                 }
                 for user in users
             ],
@@ -238,24 +245,24 @@ class MatchingService:
             }
         }
     
-    def _calculate_compatibility(self, user1: User, user2: User) -> float:
+    def _calculate_compatibility(self, user1: dict, user2: dict) -> float:
         """Calculate compatibility score between two users (0-100)."""
         score = 0.0
         
         # Same personality type: +30 points
-        if user1.personality_type == user2.personality_type:
+        if user1["personality_type"] == user2["personality_type"]:
             score += 30
         
         # Same travel style: +40 points
-        if user1.travel_style == user2.travel_style:
+        if user1["travel_style"] == user2["travel_style"]:
             score += 40
         
         # Same transport type: +20 points
-        if user1.transport_type == user2.transport_type:
+        if user1["transport_type"] == user2["transport_type"]:
             score += 20
         
         # Both have or don't have itinerary: +10 points
-        if user1.has_itinerary == user2.has_itinerary:
+        if user1["has_itinerary"] == user2["has_itinerary"]:
             score += 10
         
         return score
@@ -271,25 +278,25 @@ class MatchingService:
         else:
             return "Low"
     
-    def _get_match_reasons(self, user1: User, user2: User) -> List[str]:
+    def _get_match_reasons(self, user1: dict, user2: dict) -> List[str]:
         """Get list of reasons why users match."""
         reasons = []
         
-        if user1.personality_type == user2.personality_type:
-            reasons.append(f"Both are {user1.personality_type}s")
+        if user1["personality_type"] == user2["personality_type"]:
+            reasons.append(f"Both are {user1['personality_type']}s")
         
-        if user1.travel_style == user2.travel_style:
-            reasons.append(f"Both prefer {user1.travel_style} travel")
+        if user1["travel_style"] == user2["travel_style"]:
+            reasons.append(f"Both prefer {user1['travel_style']} travel")
         
-        if user1.transport_type == user2.transport_type:
-            reasons.append(f"Both use {user1.transport_type}")
+        if user1["transport_type"] == user2["transport_type"]:
+            reasons.append(f"Both use {user1['transport_type']}")
         
         if not reasons:
             reasons.append("Visiting same destination at same time")
         
         return reasons
     
-    def _calculate_group_compatibility(self, users: List[User]) -> Dict[str, Any]:
+    def _calculate_group_compatibility(self, users: List[dict]) -> Dict[str, Any]:
         """Calculate overall group compatibility."""
         if len(users) < 2:
             return {"score": 0, "level": "N/A"}
@@ -299,15 +306,10 @@ class MatchingService:
         travel_style_counts = defaultdict(int)
         
         for user in users:
-            personality_counts[user.personality_type] += 1
-            travel_style_counts[user.travel_style] += 1
+            personality_counts[user["personality_type"]] += 1
+            travel_style_counts[user["travel_style"]] += 1
         
         # Calculate diversity score
-        personality_diversity = len(personality_counts)
-        travel_diversity = len(travel_style_counts)
-        
-        # Groups with mixed personalities can be interesting but may need more coordination
-        # Homogeneous groups are easier to coordinate
         dominant_personality = max(personality_counts, key=personality_counts.get)
         dominant_count = personality_counts[dominant_personality]
         homogeneity_score = (dominant_count / len(users)) * 100
@@ -321,7 +323,7 @@ class MatchingService:
             "coordination_difficulty": "Easy" if homogeneity_score >= 70 else "Moderate" if homogeneity_score >= 50 else "Challenging"
         }
     
-    def _suggest_meeting_points(self, schedule: List[Dict], users: List[User]) -> List[Dict[str, str]]:
+    def _suggest_meeting_points(self, schedule: List[Dict], users: List[dict]) -> List[Dict[str, str]]:
         """Suggest convenient meeting points based on schedule."""
         suggestions = []
         
@@ -355,6 +357,10 @@ class MatchingService:
             return "Mixed preferences detected. Communication and flexibility will make this trip enjoyable for everyone."
 
 
-def get_matching_service(db: Session) -> MatchingService:
-    """Factory function to create MatchingService instance."""
-    return MatchingService(db)
+# Singleton instance
+matching_service = MatchingService()
+
+
+def get_matching_service() -> MatchingService:
+    """Factory function to get MatchingService instance."""
+    return matching_service

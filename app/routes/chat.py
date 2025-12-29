@@ -1,11 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, status
 from typing import Optional, Dict, Any, List
 import re
 
-from app.database import get_db
-from app.models.user import User
-from app.models.destination import Destination
+from app.data import get_user_by_id, get_all_destinations
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.ai_service import ai_service
 
@@ -80,21 +77,18 @@ def detect_intent(message: str) -> List[str]:
     return detected_intents
 
 
-def get_user_context(user: User) -> Dict[str, Any]:
+def get_user_context(user: dict) -> Dict[str, Any]:
     """Build user context dictionary for AI service."""
     return {
-        "personality_type": user.personality_type,
-        "travel_style": user.travel_style,
-        "transport_type": user.transport_type,
-        "has_itinerary": user.has_itinerary
+        "personality_type": user["personality_type"],
+        "travel_style": user["travel_style"],
+        "transport_type": user["transport_type"],
+        "has_itinerary": user["has_itinerary"]
     }
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat_with_assistant(
-    request: ChatRequest,
-    db: Session = Depends(get_db)
-):
+def chat_with_assistant(request: ChatRequest):
     """
     Chat with AI travel assistant. Detects intent and emotion, provides personalized responses.
     
@@ -109,7 +103,7 @@ def chat_with_assistant(
     Detects emotions: happy, sad, stressed, excited, romantic, peaceful
     """
     # Validate user exists
-    user = db.query(User).filter(User.id == request.user_id).first()
+    user = get_user_by_id(request.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -133,20 +127,20 @@ def chat_with_assistant(
     try:
         # Handle emotion-based destination suggestions
         if detected_emotion:
-            # Get destinations from database
-            destinations = db.query(Destination).limit(15).all()
+            # Get destinations from mock data
+            destinations = get_all_destinations()
             destinations_list = [
                 {
-                    "id": dest.id,
-                    "name": dest.name,
-                    "location": dest.location,
-                    "category": dest.category,
-                    "photo_spot": dest.photo_spot,
-                    "estimated_cost": dest.estimated_cost,
-                    "estimated_time": dest.estimated_time,
-                    "description": dest.description
+                    "id": dest["id"],
+                    "name": dest["name"],
+                    "location": dest["location"],
+                    "category": dest["category"],
+                    "photo_spot": dest["photo_spot"],
+                    "estimated_cost": dest["estimated_cost"],
+                    "estimated_time": dest["estimated_time"],
+                    "description": dest["description"]
                 }
-                for dest in destinations
+                for dest in destinations[:15]
             ]
             
             # Get emotion-based suggestions from AI
@@ -211,28 +205,26 @@ def chat_with_assistant(
         # Handle destination suggestions
         elif "destination_suggestion" in detected_intents:
             # Get destinations based on user preferences
-            query = db.query(Destination)
+            all_destinations = get_all_destinations()
             
             # Filter by personality and travel style
-            if user.personality_type == "introvert":
+            if user["personality_type"] == "introvert":
                 # Prefer less crowded, peaceful spots
-                query = query.filter(Destination.category == "local")
-            
-            destinations = query.limit(10).all()
+                all_destinations = [d for d in all_destinations if d["category"] == "local"]
             
             suggested_destinations = [
                 {
-                    "id": dest.id,
-                    "name": dest.name,
-                    "location": dest.location,
-                    "category": dest.category,
-                    "reason": f"Matches your {user.personality_type} personality",
+                    "id": dest["id"],
+                    "name": dest["name"],
+                    "location": dest["location"],
+                    "category": dest["category"],
+                    "reason": f"Matches your {user['personality_type']} personality",
                     "priority": "high",
-                    "cost": dest.estimated_cost,
-                    "time": dest.estimated_time,
-                    "photo_spot": dest.photo_spot
+                    "cost": dest["estimated_cost"],
+                    "time": dest["estimated_time"],
+                    "photo_spot": dest["photo_spot"]
                 }
-                for dest in destinations[:5]
+                for dest in all_destinations[:5]
             ]
             
             ai_response = ai_service.chat_with_gemini(request.message, user_context)
@@ -249,8 +241,8 @@ def chat_with_assistant(
             metadata={
                 "detected_emotion": detected_emotion,
                 "detected_intents": detected_intents,
-                "user_personality": user.personality_type,
-                "user_travel_style": user.travel_style
+                "user_personality": user["personality_type"],
+                "user_travel_style": user["travel_style"]
             }
         )
     

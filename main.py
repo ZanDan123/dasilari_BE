@@ -3,11 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from contextlib import asynccontextmanager
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from pydantic import ValidationError
 import traceback
 
-from app.database import engine, Base
 from app.routes import users_router, destinations_router, chat_router, itineraries_router
 
 
@@ -15,12 +13,10 @@ from app.routes import users_router, destinations_router, chat_router, itinerari
 async def lifespan(app: FastAPI):
     """
     Lifespan event handler for startup and shutdown events.
-    Creates database tables on startup.
     """
-    # Startup: Create database tables
-    print("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
-    print("Database tables created successfully!")
+    # Startup
+    print("Starting DasiLari application...")
+    print("Using mock data (no database)")
     
     yield
     
@@ -55,14 +51,13 @@ app = FastAPI(
     
     - **FastAPI** - Modern Python web framework
     - **Google Gemini 1.5 Flash** - AI-powered chat and recommendations
-    - **PostgreSQL** - Reliable data storage
-    - **SQLAlchemy** - Database ORM
+    - **Mock Data** - In-memory data storage (no database required)
     
     ## Getting Started
     
-    1. Seed destinations: `POST /api/destinations/seed`
-    2. Create user profile: `POST /api/survey`
-    3. Start chatting: `POST /api/chat`
+    1. Create user profile: `POST /api/survey`
+    2. Start chatting: `POST /api/chat`
+    3. Explore destinations: `GET /api/destinations`
     
     ---
     
@@ -118,34 +113,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "error": "Validation Error",
             "message": "Invalid input data. Please check your request.",
             "details": errors
-        }
-    )
-
-
-@app.exception_handler(SQLAlchemyError)
-async def database_exception_handler(request: Request, exc: SQLAlchemyError):
-    """
-    Handle database errors (connection, query, integrity errors).
-    Returns 500 status code for general errors, 409 for integrity violations.
-    """
-    # Check if it's an integrity error (duplicate, foreign key violation, etc.)
-    if isinstance(exc, IntegrityError):
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "error": "Database Integrity Error",
-                "message": "The operation conflicts with existing data. This might be a duplicate entry or invalid reference.",
-                "details": str(exc.orig) if hasattr(exc, 'orig') else str(exc)
-            }
-        )
-    
-    # General database error
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "Database Error",
-            "message": "A database error occurred. Please try again later.",
-            "details": "Database connection or query error. Check server logs for details."
         }
     )
 
