@@ -178,20 +178,19 @@ def chat_with_assistant(request: ChatRequest):
         
         # Handle photo spot requests
         elif "photo_spots" in detected_intents:
-            photo_destinations = db.query(Destination).filter(
-                Destination.photo_spot == True
-            ).limit(10).all()
+            all_destinations = get_all_destinations()
+            photo_destinations = [d for d in all_destinations if d.get("photo_spot", False)][:10]
             
             suggested_destinations = [
                 {
-                    "id": dest.id,
-                    "name": dest.name,
-                    "location": dest.location,
-                    "category": dest.category,
+                    "id": dest["id"],
+                    "name": dest["name"],
+                    "location": dest["location"],
+                    "category": dest["category"],
                     "reason": "Popular photo spot with stunning views",
-                    "priority": "high" if dest.category == "famous" else "medium",
-                    "cost": dest.estimated_cost,
-                    "time": dest.estimated_time,
+                    "priority": "high" if dest["category"] == "famous" else "medium",
+                    "cost": dest["estimated_cost"],
+                    "time": dest["estimated_time"],
                     "photo_spot": True
                 }
                 for dest in photo_destinations
